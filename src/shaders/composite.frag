@@ -1,23 +1,14 @@
 // composite.frag
 // ============================================================================
 // Final pass — takes the fire RT (rgb = HDR colour, a = heat scalar) and
-// composites it onto the camera feed.
+// composites it onto the camera feed. SHARP build (no wide bloom blur).
 //
-// What this pass does that the previous version didn't do enough of:
-//
-//   • HEAVY BLOOM. We sample the fire RT at TWO concentric rings (inner
-//     ring tight = halo, outer ring wide = the soft glow that bleeds far
-//     beyond the flame). 24 taps total. This is what makes the fire actually
-//     glow instead of just being a coloured shape on screen.
-//
-//   • STRONG FIRE-LIGHT CAST. The hand and surroundings near the fire get
-//     tinted warm orange in proportion to a "fire-presence" field sampled
-//     in a wider radius. Without this, the fire looks pasted-in. With it,
-//     the camera feed reads as actually being illuminated by flames.
-//
-//   • HEAT-DRIVEN UV DISPLACEMENT. The camera feed is shifted with two
-//     time-modulated sine waves, scaled by the heat field at this pixel.
-//     Air above the visible fire shimmers; air far from it doesn't.
+//   • SHARP FIRE. We sample the fire RT at the current pixel only. No
+//     multi-tap radial blur — the soft halo is gone, fire reads crisp.
+//   • WARM FIRE-LIGHT CAST is driven directly by the heat-field channel
+//     instead of bloom. Surfaces near the fire still glow orange.
+//   • HEAT-SHIMMER UV DISPLACEMENT of the camera (unchanged) — air above
+//     the flame still ripples.
 // ============================================================================
 
 #define MAX_HANDS 2
@@ -32,37 +23,10 @@ uniform vec2  uResolution;
 uniform float uTime;
 uniform float uCastFlash;
 
-// ─── Bloom: two-ring radial sample ───────────────────────────────────────
-// Most "real" bloom in modern engines uses multi-pass downsample/blur/upsample
-// (Mip-chain bloom, COD/Frostbite-style). Here we do a 24-tap single-pass
-// approximation — cheaper, perfectly fine for a single light source.
-vec3 sampleBloom(vec2 uv) {
-  vec2 px = 1.0 / uResolution;
-  vec3 acc = texture2D(uFire, uv).rgb * 0.50;  // sharp centre
-
-  // Inner ring: 8 taps at moderate radius — produces the "halo" right
-  // around the visible flame.
-  for (int i = 0; i < 8; i++) {
-    float a = 6.2831853 * float(i) / 8.0;
-    vec2  o = vec2(cos(a), sin(a));
-    acc += texture2D(uFire, uv + o * px * 10.0).rgb * 0.42;
-  }
-
-  // Outer ring: 16 taps at large radius — produces the broad atmospheric
-  // glow that makes the fire feel volumetrically bright.
-  for (int i = 0; i < 16; i++) {
-    float a = 6.2831853 * float(i) / 16.0;
-    vec2  o = vec2(cos(a), sin(a));
-    acc += texture2D(uFire, uv + o * px * 30.0).rgb * 0.18;
-  }
-
-  return acc * 0.75;
-}
-
 // Heat at a given pixel — accumulates the heat-field channel from the fire
-// RT at the pixel and a few vertical taps below (heat extends upward in real
-// life, so a pixel "above" a hot region is also hot). Used for distortion
-// and for the warm light cast.
+// RT at the pixel and a few vertical taps below (heat rises in real life,
+// so a pixel "above" a hot region still feels hot). Used for camera
+// distortion + warm light cast.
 float sampleHeatField(vec2 uv) {
   float h = texture2D(uFire, uv).a * 0.55;
   for (int i = 1; i <= 6; i++) {
@@ -92,25 +56,25 @@ void main() {
   float vig = smoothstep(0.95, 0.25, length(vc));
   video *= mix(0.55, 1.0, vig);
 
-  // ── 2. Sharp fire + bloom ───────────────────────────────────────────────
+  // ── 2. Sharp fire (no bloom) ────────────────────────────────────────────
   vec3 sharpFire = texture2D(uFire, vUv).rgb;
-  vec3 bloom     = sampleBloom(vUv);
 
-  // ── 3. Strong warm fire-light cast on the camera feed ───────────────────
-  // The bloom field doubles as our "how much fire is near this pixel" map.
-  // We tint the underlying camera in a warm orange proportional to that
-  // brightness — that's what sells the fire as actually existing in the
-  // scene rather than being a sticker on top.
-  float castStrength = clamp(dot(bloom, vec3(0.299, 0.587, 0.114)), 0.0, 1.5);
-  vec3  warmCast     = vec3(1.00, 0.55, 0.20);
-
-  // Multiply the camera feed by an orange tint where there's heat — this is
-  // the colour of light hitting a surface, not a glow on top of it.
-  video = mix(video, video * (vec3(1.0) + warmCast * 1.4), clamp(castStrength * 1.2, 0.0, 1.0));
+  // ── 3. Warm fire-light cast on the camera feed ──────────────────────────
+  // Driven by heat field directly — pixels near hot regions get tinted
+  // warm orange. This is the only thing that makes the hand actually look
+  // illuminated by fire instead of having fire stuck on top.
+  vec3 warmCast = vec3(1.00, 0.55, 0.20);
+  video = mix(
+    video,
+    video * (vec3(1.0) + warmCast * 1.4),
+    clamp(heat * 1.2, 0.0, 1.0)
+  );
 
   // ── 4. Composite ────────────────────────────────────────────────────────
-  // Additive: bright fire pixels stack on top of the (now warm-lit) video.
-  vec3 composited = video + bloom + sharpFire * 0.75;
+  // Sharp additive: bright fire pixels stack on top of the warm-lit video.
+  // Slight extra weight on sharp fire to compensate for losing the bloom
+  // contribution.
+  vec3 composited = video + sharpFire * 1.15;
 
   // Cast-flash full-screen orange wash decays per frame in JS.
   composited += vec3(1.0, 0.45, 0.05) * uCastFlash * 0.32;

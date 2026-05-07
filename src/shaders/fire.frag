@@ -79,20 +79,27 @@ vec4 firePlume(vec2 uv, vec2 palm, float intensity, float radius) {
   vec2 d = uv - palm;
   d.x *= uResolution.x / uResolution.y;
 
-  // Lift the palm anchor up — fire extends BELOW the palm too, wrapping
-  // over the front of the hand instead of just rising above it.
-  d.y += radius * 0.18 * intensity;
+  // Small lift so the bottom of the flame just kisses the palm — like a
+  // candle's wick sitting at the base of the flame, not deep inside it.
+  d.y += radius * 0.08 * intensity;
 
-  // Stretch coords for tall flame columns; scroll upward in time slowly.
-  // Slow scroll matters: fast scroll reads as "screensaver", slow reads as
-  // "majestic flame". 0.32 is the sweet spot from playing with values.
+  // ── Subtle horizontal lean / flicker ────────────────────────────────────
+  // Real flames sway slightly with air currents. We modulate x by a slow
+  // sine to give the whole column a gentle drift, and a faster, smaller
+  // sine for nervous flicker. Both scale with how far up we are so the
+  // base barely moves and the tip waves.
+  float swayY = max(d.y, 0.0) / max(radius, 0.001);
+  float sway = sin(uTime * 0.8 + swayY * 1.4) * 0.10
+             + sin(uTime * 2.3 + swayY * 4.1) * 0.04;
+  d.x -= sway * radius * smoothstep(0.0, 1.5, swayY);
+
+  // Stretch coords for tall flame columns; slow upward scroll. Slow scroll
+  // matters: fast scroll reads as "screensaver", slow reads as "majestic
+  // flame". 0.28 is the sweet spot.
   vec2 fireCoord = vec2(d.x * 2.0, d.y * 1.0);
-  fireCoord.y -= uTime * 0.32;
+  fireCoord.y -= uTime * 0.28;
 
   // ── Body layer: domain-warped low-frequency FBM ─────────────────────────
-  // Sample noise twice and use that as a position offset for a third sample.
-  // Domain warping converts uniform noise into the swirling, churning,
-  // self-organising patterns that read as fluid motion.
   vec2 q = vec2(
     fbm(fireCoord * 1.2 + vec2(0.0, uTime * 0.18), 3),
     fbm(fireCoord * 1.2 + vec2(5.2, 1.3) - uTime * 0.10, 3)
@@ -100,26 +107,45 @@ vec4 firePlume(vec2 uv, vec2 palm, float intensity, float radius) {
   float body = fbm(fireCoord * 1.5 + q * 1.6, 4);
 
   // ── Detail layer: high-frequency tongues ────────────────────────────────
-  // Sampled at higher frequency, MODULATED by the body so detail concentrates
-  // along the body's edges (which is where real flame tongues form).
   float detail = fbm(fireCoord * 5.5 + q * 0.6 - vec2(0.0, uTime * 0.55), 3);
 
-  // Blend: body provides the mass, detail adds tongues primarily near edges.
-  // The edge weight: detail contribution is high where body is mid-range
-  // (i.e. at the silhouette of the flame), low in the centre (solid mass).
+  // Blend: body provides the mass, detail concentrates at silhouette edges
+  // where real flame tongues form.
   float edgeWeight = 1.0 - abs(body - 0.5) * 1.6;
   float n = body + detail * edgeWeight * 0.55;
 
-  // ── Shape mask ──────────────────────────────────────────────────────────
-  // Tall, narrow ellipse anchored on the (lifted) palm. The "narrow" makes
-  // the fire look like a column rising up rather than a fuzzy blob.
-  vec2 sd = d;
-  sd.x *= 1.5;   // squish x → narrower in horizontal
-  sd.y *= 0.55;  // stretch y → taller in vertical
-  float shapeDist = length(sd);
+  // ── CANDLE-FLAME shape mask (teardrop) ──────────────────────────────────
+  // Goal: classic flame silhouette — wide rounded base, tapering to a
+  // pointed tip. Approach: map d.y to a "yProgress" in [0,1] from base to
+  // tip, compute a width-at-this-height function, then mask by |x|/width.
+  //
+  // - Cubic-ish taper (pow(1-y, 0.65)) gives a sharp tip without looking
+  //   like a thin stick. sqrt is too round, linear is too triangular.
+  // - A small near-base bulge (1 + 0.18 * (1 - smoothstep(0,0.35,y))) gives
+  //   the "cheek" of a teardrop instead of perfectly straight sides.
+  float yProgress = clamp(
+    (d.y + radius * 0.30) / (radius * 1.95),
+    0.0, 1.0
+  );
 
-  float r0 = radius * (0.7 + intensity * 0.55);
-  float mask = smoothstep(r0, r0 * 0.12, shapeDist);
+  float widthAtY  = radius * pow(1.0 - yProgress, 0.65);
+  widthAtY       *= 1.0 + (1.0 - smoothstep(0.0, 0.35, yProgress)) * 0.18;
+  // Cap minimum width so the tip has SOME presence rather than being
+  // mathematically zero (we still fade it via the yProgress fade below).
+  widthAtY        = max(widthAtY, radius * 0.04);
+
+  float xRatio = abs(d.x) / widthAtY;
+
+  // Mask: 1 inside the candle profile, soft fade at the silhouette edge.
+  float mask = 1.0 - smoothstep(0.55, 1.10, xRatio);
+
+  // Fade hard at the tip (yProgress → 1) and gently below the base. Boost
+  // the body of the flame slightly with intensity so a level-up reads as
+  // a denser, more "voluptuous" flame rather than just a bigger one.
+  float bodyBoost = 0.85 + intensity * 0.55;
+  mask *= smoothstep(0.00, 0.04, yProgress)
+        * smoothstep(1.00, 0.92, yProgress)
+        * bodyBoost;
 
   // ── Combine + crush contrast ────────────────────────────────────────────
   float fire = mask * (n * 1.5 + 0.18) * intensity;
@@ -149,14 +175,16 @@ vec4 firePlume(vec2 uv, vec2 palm, float intensity, float radius) {
 
   // ── Heat field ──────────────────────────────────────────────────────────
   // Wider, softer mask used by the composite pass for: (a) UV displacement
-  // of the camera feed (heat shimmer), (b) light cast on surroundings,
-  // (c) the bloom mask. Extends ABOVE the visible flame because real heat
-  // rises beyond where you can still see fire.
+  // of the camera feed (heat shimmer), (b) warm light cast on surroundings.
+  // Centered roughly mid-flame (yProgress ~0.5, d.y ≈ 0.55R) and stretched
+  // vertically so heat rises ABOVE the visible flame too — air above a real
+  // candle is hot even where you can't see fire any more.
   vec2 hd = d;
-  hd.y += radius * 0.55 * intensity;
-  hd.y *= 0.60;
+  hd.y -= radius * 0.55;   // shift heat origin up to mid-column
+  hd.y *= 0.55;            // squash → tall heat ellipse
+  hd.x *= 0.90;
   float heatDist = length(hd);
-  float heat = smoothstep(radius * 2.0, radius * 0.15, heatDist);
+  float heat = smoothstep(radius * 2.2, radius * 0.15, heatDist);
   heat *= (body * 0.65 + 0.45) * intensity;
   heat = max(heat, fire);
 
