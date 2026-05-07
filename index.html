@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JustMagic ✦</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      overflow: hidden;
+      font-family: 'Palatino Linotype', 'Book Antiqua', 'Georgia', serif;
+      user-select: none;
+    }
+
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #mic-status {
+      position: absolute;
+      top: 24px; left: 24px;
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: rgba(255, 200, 80, 0.45);
+      transition: color 0.4s, text-shadow 0.4s;
+    }
+    #mic-status.listening {
+      color: rgba(100, 255, 150, 0.9);
+      text-shadow: 0 0 14px rgba(100, 255, 150, 0.5);
+    }
+    #mic-status.error { color: rgba(255, 80, 80, 0.85); }
+
+    #dots {
+      position: absolute;
+      top: 28px; right: 28px;
+      display: flex; gap: 10px;
+    }
+    .dot {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 120, 0, 0.3);
+      background: transparent;
+      transition: all 0.35s;
+    }
+    .dot.lit {
+      background: #ff8800;
+      border-color: #ff8800;
+      box-shadow: 0 0 8px #ff6600, 0 0 20px #ff3300;
+    }
+
+    #spell-text {
+      position: absolute;
+      top: 20%; left: 0; right: 0;
+      text-align: center;
+      font-size: clamp(2rem, 5.5vw, 4.2rem);
+      font-weight: bold;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: #fff;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #spell-text.flash { animation: spellFlash 2.6s ease-out forwards; }
+    @keyframes spellFlash {
+      0%   { opacity:0; transform:scale(0.55) translateY(18px); filter:blur(10px); }
+      10%  { opacity:1; transform:scale(1.08) translateY(0);    filter:blur(0);
+             color:#fff; text-shadow:0 0 30px #fff,0 0 70px #ff9900,0 0 120px #ff4400; }
+      30%  { opacity:1; transform:scale(1.0);
+             color:#ffbb55; text-shadow:0 0 20px #ff8800,0 0 55px #ff3300; }
+      70%  { opacity:0.9; }
+      100% { opacity:0; transform:scale(0.94) translateY(-14px); }
+    }
+
+    #active-label {
+      position: absolute;
+      bottom: 64px; left: 0; right: 0;
+      text-align: center;
+      font-size: 11px; letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: rgba(255,150,50,0);
+      transition: color 0.5s;
+    }
+    #active-label.on { color: rgba(255,150,50,0.75); }
+
+    #hint {
+      position: absolute;
+      bottom: 26px; left: 0; right: 0;
+      text-align: center;
+      font-size: 11px; letter-spacing: 0.18em;
+      color: rgba(255,200,100,0.38); text-transform: uppercase;
+    }
+    #hint b { color:rgba(255,165,50,0.75); font-style:italic; font-weight:normal; }
+
+    .rune {
+      position: absolute; font-size: 18px;
+      color: rgba(255,180,60,0.12); pointer-events: none;
+    }
+    .rune.tl { top:18px; left:80px; }
+    .rune.tr { top:18px; right:80px; }
+    .rune.bl { bottom:18px; left:18px; }
+    .rune.br { bottom:18px; right:18px; }
+  </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="hud">
+  <div id="mic-status">◎ Initializing…</div>
+  <div id="dots">
+    <div class="dot" id="d0"></div>
+    <div class="dot" id="d1"></div>
+    <div class="dot" id="d2"></div>
+  </div>
+  <div id="spell-text"></div>
+  <div id="active-label">🔥 Fire · Active</div>
+  <div id="hint">Say <b>Incendia</b> to conjure · <b>Finite</b> to dismiss · <b>I</b> / <b>X</b> to test</div>
+  <span class="rune tl">⚡</span>
+  <span class="rune tr">✦</span>
+  <span class="rune bl">✦</span>
+  <span class="rune br">⚡</span>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+(function () {
+  'use strict';
+
+  // ═══════════════════════════════════════════════
+  //  CANVAS SETUP
+  // ═══════════════════════════════════════════════
+  const canvas = document.getElementById('canvas');
+  const ctx    = canvas.getContext('2d');
+
+  // Offscreen canvas for bloom pass
+  const bloomCanvas = document.createElement('canvas');
+  const bloomCtx    = bloomCanvas.getContext('2d');
+
+  function resize() {
+    canvas.width  = bloomCanvas.width  = window.innerWidth;
+    canvas.height = bloomCanvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ═══════════════════════════════════════════════
+  //  STATE
+  // ═══════════════════════════════════════════════
+  let handLandmarks = [];
+  let particles     = [];   // FireParticle[]
+  let embers        = [];   // Ember[]
+  let spellActive   = false;
+  let spellLevel    = 0;
+  let castFlash     = 0;
+  let orbCenter     = null;
+  let frameTime     = 0;    // performance.now() updated each frame
+
+  // ═══════════════════════════════════════════════
+  //  DOM
+  // ═══════════════════════════════════════════════
+  const micStatusEl  = document.getElementById('mic-status');
+  const spellTextEl  = document.getElementById('spell-text');
+  const activeLabelEl = document.getElementById('active-label');
+  const dots = ['d0','d1','d2'].map(id => document.getElementById(id));
+
+  // ═══════════════════════════════════════════════
+  //  AUDIO
+  // ═══════════════════════════════════════════════
+  let audioCtx = null, fireGain = null, fireSrc = null;
+
+  function ensureAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  function playCastSound(level) {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime, iv = level / 3;
+
+    // Dramatic rising whoosh
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(250 + iv * 350, t);
+    osc.frequency.exponentialRampToValueAtTime(55, t + 1.4);
+
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = 'lowpass'; filt.frequency.value = 800; filt.Q.value = 2.5;
+
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.2 * iv, t + 0.07);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
+
+    osc.connect(filt); filt.connect(g); g.connect(audioCtx.destination);
+    osc.start(t); osc.stop(t + 1.7);
+
+    // Crackle burst
+    const bLen = audioCtx.sampleRate * 0.35;
+    const bBuf = audioCtx.createBuffer(1, bLen, audioCtx.sampleRate);
+    const bd   = bBuf.getChannelData(0);
+    for (let i = 0; i < bLen; i++) bd[i] = (Math.random()*2-1) * Math.exp(-i/(bLen*0.25));
+    const burst = audioCtx.createBufferSource();
+    burst.buffer = bBuf;
+    const bg = audioCtx.createGain(); bg.gain.value = 0.14 * iv;
+    burst.connect(bg); bg.connect(audioCtx.destination);
+    burst.start(t + 0.04);
+  }
+
+  function startFireLoop() {
+    if (!audioCtx || fireGain) return;
+    const sr = audioCtx.sampleRate, len = sr * 4;
+    const buf = audioCtx.createBuffer(1, len, sr);
+    const ch  = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = Math.random()*2-1;
+
+    fireSrc = audioCtx.createBufferSource();
+    fireSrc.buffer = buf; fireSrc.loop = true;
+
+    const f = audioCtx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 300; f.Q.value = 0.9;
+
+    fireGain = audioCtx.createGain(); fireGain.gain.value = 0;
+    fireSrc.connect(f); f.connect(fireGain); fireGain.connect(audioCtx.destination);
+    fireSrc.start();
+    fireGain.gain.linearRampToValueAtTime(0.07, audioCtx.currentTime + 0.7);
+  }
+
+  function stopFireLoop() {
+    if (!fireGain || !audioCtx) return;
+    fireGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.3);
+    const s = fireSrc; fireGain = null; fireSrc = null;
+    setTimeout(() => { try { s.stop(); } catch(e) {} }, 1200);
+  }
+
+  function setFireVol(v) {
+    if (fireGain) fireGain.gain.setTargetAtTime(Math.max(0, v * 0.13), audioCtx.currentTime, 0.1);
+  }
+
+  // ═══════════════════════════════════════════════
+  //  FIRE PARTICLE
+  //  — elongated ellipses, turbulence noise, bloom
+  // ═══════════════════════════════════════════════
+  class FireParticle {
+    constructor(x, y, intensity, isOrb) {
+      this.isOrb = !!isOrb;
+      const spread = 22 * intensity;
+      this.x = x + (Math.random()-0.5) * spread;
+      this.y = y + (Math.random()-0.5) * spread * 0.5;
+
+      // Per-particle noise seed so turbulence is independent
+      this.noiseOffset = Math.random() * 200;
+
+      if (!this.isOrb) {
+        this.vx    = (Math.random()-0.5) * 2.2 * intensity;
+        this.vy    = -(Math.random() * 5.5 + 2.5) * intensity;
+        this.size  = (Math.random() * 32 + 16) * intensity;
+        this.decay = (Math.random() * 0.015 + 0.007) / Math.max(intensity, 0.35);
+        // Aspect ratio for elongation: tall flame tongues
+        this.rx    = 0.45 + Math.random() * 0.2; // horizontal radius multiplier (< 1 = narrow)
+      } else {
+        this.angle    = Math.random() * Math.PI * 2;
+        this.radius   = (Math.random() * 70 + 20) * intensity;
+        this.angSpeed = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 0.045 + 0.018);
+        this.cx = x; this.cy = y;
+        this.size  = (Math.random() * 30 + 12) * intensity;
+        this.rx    = 0.7 + Math.random() * 0.3;
+        this.decay = Math.random() * 0.009 + 0.005;
+        this.vx = 0; this.vy = 0;
+      }
+      this.life = 1.0;
+    }
+
+    update(orbCx, orbCy) {
+      const t = frameTime * 0.001;
+
+      if (!this.isOrb) {
+        // Turbulent horizontal drift — each particle has its own phase
+        this.vx += Math.sin(this.noiseOffset + t * 2.1) * 0.38;
+        this.x  += this.vx;
+        this.y  += this.vy;
+        this.vy *= 0.968; // slight deceleration (fire slows as it cools)
+        this.vx *= 0.95;
+      } else {
+        if (orbCx !== undefined) { this.cx = orbCx; this.cy = orbCy; }
+        this.angle  += this.angSpeed;
+        this.radius  = Math.max(this.radius * 0.997, 8);
+        const r = this.radius * Math.sqrt(Math.max(this.life, 0));
+        this.x = this.cx + Math.cos(this.angle) * r;
+        this.y = this.cy + Math.sin(this.angle) * r;
+      }
+
+      this.life -= this.decay;
+      this.size *= 0.989;
+      return this.life > 0 && this.size > 0.8;
+    }
+
+    draw(targetCtx) {
+      const lf = Math.max(this.life, 0);
+      const a  = Math.pow(lf, 0.6);
+      const ry = this.size;           // vertical radius (full)
+      const rx = this.size * this.rx; // horizontal radius (narrower → flame tongue)
+
+      // Color: young particles are deep orange-red; they shift to bright yellow-white
+      // as they age (rise upward into the hotter column)
+      // life=1 → fresh: red-orange | life=0.5 → peak: yellow-orange | life→0 → fading red
+      const peakT  = Math.sin(lf * Math.PI); // 0→1→0 arc over life
+      const hue    = 12 + peakT * 38;        // 12 (red-orange) → 50 (yellow) → back
+      const light  = 45 + peakT * 30;        // 45% → 75% → 45%
+
+      const grd = targetCtx.createRadialGradient(this.x, this.y - ry*0.2, 0, this.x, this.y, ry);
+      grd.addColorStop(0,    `hsla(${hue+40},100%,${light+25}%,${a * 0.95})`); // white-hot core
+      grd.addColorStop(0.25, `hsla(${hue+20},100%,${light+10}%,${a * 0.80})`);
+      grd.addColorStop(0.55, `hsla(${hue},   100%,${light}%,   ${a * 0.55})`);
+      grd.addColorStop(0.82, `hsla(${hue-8}, 90%, ${light-10}%,${a * 0.25})`);
+      grd.addColorStop(1,    `hsla(${hue-14},80%, 20%,          0)`);
+
+      targetCtx.globalCompositeOperation = 'lighter';
+      targetCtx.beginPath();
+      // Ellipse: narrower in x, taller in y → flame tongue shape
+      targetCtx.ellipse(this.x, this.y, rx, ry, 0, 0, Math.PI * 2);
+      targetCtx.fillStyle = grd;
+      targetCtx.fill();
+      targetCtx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  // ═══════════════════════════════════════════════
+  //  EMBER  — small sparks that shoot off with gravity
+  // ═══════════════════════════════════════════════
+  class Ember {
+    constructor(x, y, intensity) {
+      const angle = -Math.PI/2 + (Math.random()-0.5) * Math.PI * 0.8;
+      const speed = (Math.random() * 5 + 3) * intensity;
+      this.x  = x; this.y = y;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.life  = 1.0;
+      this.decay = Math.random() * 0.035 + 0.02;
+      this.size  = Math.random() * 2.8 + 0.8;
+      this.hue   = Math.random() * 30 + 20; // orange-yellow
+    }
+
+    update() {
+      this.x  += this.vx;
+      this.y  += this.vy;
+      this.vy += 0.18;   // gravity
+      this.vx *= 0.97;
+      this.life -= this.decay;
+      return this.life > 0;
+    }
+
+    draw(targetCtx) {
+      targetCtx.globalCompositeOperation = 'lighter';
+      targetCtx.globalAlpha = Math.pow(this.life, 0.5) * 0.9;
+      targetCtx.fillStyle = `hsl(${this.hue}, 100%, ${50 + this.life*30}%)`;
+      targetCtx.beginPath();
+      targetCtx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      targetCtx.fill();
+      targetCtx.globalCompositeOperation = 'source-over';
+      targetCtx.globalAlpha = 1;
+    }
+  }
+
+  // ═══════════════════════════════════════════════
+  //  AMBIENT SPARKLES
+  // ═══════════════════════════════════════════════
+  class Sparkle {
+    constructor() { this.reset(true); }
+    reset(rand) {
+      this.x    = Math.random() * canvas.width;
+      this.y    = rand ? Math.random() * canvas.height : canvas.height + 5;
+      this.size = Math.random() * 1.6 + 0.3;
+      this.vy   = -(Math.random() * 0.45 + 0.1);
+      this.vx   = (Math.random()-0.5) * 0.25;
+      this.life = rand ? Math.random() : 1.0;
+      this.hue  = Math.random() * 50 + 18;
+    }
+    update() {
+      this.x += this.vx; this.y += this.vy; this.life -= 0.0025;
+      if (this.life <= 0 || this.y < -4) this.reset(false);
+    }
+    draw() {
+      ctx.globalAlpha = this.life * 0.45;
+      ctx.fillStyle = `hsl(${this.hue},85%,75%)`;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  const sparkles = Array.from({ length: 110 }, () => new Sparkle());
+
+  // ═══════════════════════════════════════════════
+  //  HAND HELPERS
+  // ═══════════════════════════════════════════════
+  function lx(lm, i) { return (1 - lm[i].x) * canvas.width; }
+  function ly(lm, i) { return lm[i].y * canvas.height; }
+
+  function palmCenter(lm) {
+    const ids = [0,5,9,13,17];
+    let sx=0, sy=0;
+    ids.forEach(i => { sx += lx(lm,i); sy += ly(lm,i); });
+    return { x: sx/ids.length, y: sy/ids.length };
+  }
+
+  function handOpenness(lm) {
+    const tips=[8,12,16,20], pips=[6,10,14,18];
+    let open=0;
+    tips.forEach((t,i) => { if (lm[t].y < lm[pips[i]].y) open++; });
+    if (Math.abs(lm[4].x - lm[5].x) > 0.07) open++;
+    return open / 5;
+  }
+
+  function dist2D(a, b) { return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  // ═══════════════════════════════════════════════
+  //  EMITTERS
+  // ═══════════════════════════════════════════════
+  const TIPS = [4,8,12,16,20];
+
+  function emitFire(lm, intensity) {
+    const count = Math.floor(intensity * 14 + 5);
+    const palm  = palmCenter(lm);
+
+    for (let i = 0; i < count; i++) {
+      let ex = palm.x, ey = palm.y;
+      // 40% from palm, 60% from tips — makes fingers look individually on fire
+      if (Math.random() > 0.4) {
+        const t = TIPS[Math.floor(Math.random() * TIPS.length)];
+        ex = lx(lm,t); ey = ly(lm,t);
+      }
+      particles.push(new FireParticle(ex, ey, intensity, false));
+    }
+
+    // Occasional embers from fingertips (more at higher levels)
+    if (Math.random() < intensity * 0.35) {
+      const t = TIPS[Math.floor(Math.random() * TIPS.length)];
+      embers.push(new Ember(lx(lm,t), ly(lm,t), intensity));
+    }
+  }
+
+  function emitOrb(cx, cy, intensity) {
+    const count = Math.floor(intensity * 18 + 7);
+    for (let i = 0; i < count; i++) particles.push(new FireParticle(cx, cy, intensity, true));
+    if (Math.random() < intensity * 0.3) embers.push(new Ember(cx + (Math.random()-0.5)*60, cy, intensity));
+  }
+
+  // ═══════════════════════════════════════════════
+  //  SPELL CONTROL
+  // ═══════════════════════════════════════════════
+  function activateFire() {
+    ensureAudio();
+    if (!spellActive) {
+      spellActive = true; spellLevel = 1;
+      startFireLoop();
+    } else {
+      spellLevel = Math.min(spellLevel + 1, 3);
+    }
+    castFlash = 0.5;
+    playCastSound(spellLevel);
+    const marks = spellLevel > 1 ? ' ' + '✦'.repeat(spellLevel-1) : '';
+    flashSpell('INCENDIA' + marks);
+    updateDots();
+    activeLabelEl.className = 'on';
+  }
+
+  function deactivateFire() {
+    if (!spellActive) return;
+    spellActive = false; spellLevel = 0;
+    updateDots();
+    stopFireLoop();
+    flashSpell('FINITE');
+    activeLabelEl.className = '';
+  }
+
+  function flashSpell(text) {
+    spellTextEl.textContent = text;
+    spellTextEl.className   = '';
+    void spellTextEl.offsetWidth;
+    spellTextEl.className   = 'flash';
+  }
+
+  function updateDots() {
+    dots.forEach((d,i) => d.className = 'dot' + (i < spellLevel ? ' lit' : ''));
+  }
+
+  // ═══════════════════════════════════════════════
+  //  VOICE
+  // ═══════════════════════════════════════════════
+  function setupVoice() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      micStatusEl.textContent = '◎ Voice unavailable — use Chrome';
+      micStatusEl.className   = 'error'; return;
+    }
+    const rec = new SR();
+    rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+    let lastFire=0, lastFin=0;
+
+    rec.onstart = () => { micStatusEl.textContent='◉ Listening'; micStatusEl.className='listening'; };
+    rec.onerror = e => {
+      micStatusEl.textContent=`◎ Mic: ${e.error}`; micStatusEl.className='error';
+      if (e.error!=='aborted') setTimeout(()=>{ try{rec.start();}catch(_){} },1500);
+    };
+    rec.onend = () => setTimeout(()=>{ try{rec.start();}catch(_){} },300);
+    rec.onresult = event => {
+      const now = Date.now();
+      for (let i=event.resultIndex; i<event.results.length; i++) {
+        const t = event.results[i][0].transcript.toLowerCase();
+        if (now-lastFire>700 && /(incendia|in[\s-]?send|in[\s-]?sen[\s-]?dia)/.test(t)) {
+          lastFire=now; activateFire(); break;
+        }
+        if (now-lastFin>700 && /(finite|extinguo|stop fire|extinguish)/.test(t)) {
+          lastFin=now; deactivateFire(); break;
+        }
+      }
+    };
+    try { rec.start(); } catch(_) {}
+  }
+
+  window.addEventListener('keydown', e => {
+    if (e.key==='i'||e.key==='I') activateFire();
+    if (e.key==='x'||e.key==='X'||e.key==='Escape') deactivateFire();
+  });
+
+  // ═══════════════════════════════════════════════
+  //  CAMERA + MEDIAPIPE
+  // ═══════════════════════════════════════════════
+  const video = document.createElement('video');
+  video.setAttribute('autoplay',''); video.setAttribute('playsinline','');
+  video.style.cssText='position:fixed;opacity:0;width:1px;height:1px;pointer-events:none;top:0;left:0';
+  document.body.appendChild(video);
+
+  let handsReady = false;
+
+  function initMediaPipe() {
+    if (typeof Hands === 'undefined') {
+      micStatusEl.textContent='⚠ MediaPipe failed to load'; micStatusEl.className='error'; return;
+    }
+    const hands = new Hands({ locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({ maxNumHands:2, modelComplexity:1, minDetectionConfidence:0.6, minTrackingConfidence:0.55 });
+    hands.onResults(r => {
+      handLandmarks = r.multiHandLandmarks || [];
+      if (!handsReady) {
+        handsReady=true;
+        micStatusEl.textContent='◉ Ready · Listening';
+        micStatusEl.className='listening';
+      }
+    });
+
+    if (typeof Camera !== 'undefined') {
+      new Camera(video, {
+        onFrame: async()=>{ await hands.send({ image:video }); },
+        width:1280, height:720
+      }).start().catch(()=>{ micStatusEl.textContent='◎ Camera denied'; micStatusEl.className='error'; });
+    } else {
+      navigator.mediaDevices.getUserMedia({ video:{facingMode:'user',width:1280,height:720} })
+        .then(stream => {
+          video.srcObject=stream; video.play();
+          const loop=async()=>{ if(video.readyState>=2) await hands.send({image:video}); requestAnimationFrame(loop); };
+          video.onloadedmetadata=loop;
+        })
+        .catch(()=>{ micStatusEl.textContent='◎ Camera denied'; micStatusEl.className='error'; });
+    }
+  }
+  setTimeout(initMediaPipe, 200);
+
+  // ═══════════════════════════════════════════════
+  //  RENDER LOOP
+  // ═══════════════════════════════════════════════
+  function render(ts) {
+    requestAnimationFrame(render);
+    frameTime = ts;
+
+    const cw = canvas.width, ch = canvas.height;
+
+    // ── 1. Camera feed (mirrored + slightly darkened) ──
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    if (video.readyState >= 2) {
+      ctx.save();
+      ctx.translate(cw, 0); ctx.scale(-1, 1);
+      ctx.globalAlpha = 0.8;
+      ctx.drawImage(video, 0, 0, cw, ch);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.fillStyle = '#03030a'; ctx.fillRect(0,0,cw,ch);
+    }
+
+    // ── 2. Vignette ──
+    const vig = ctx.createRadialGradient(cw/2,ch/2,ch*0.22,cw/2,ch/2,ch*0.92);
+    vig.addColorStop(0,'rgba(0,0,0,0)');
+    vig.addColorStop(1,'rgba(0,0,5,0.7)');
+    ctx.fillStyle=vig; ctx.fillRect(0,0,cw,ch);
+
+    // ── 3. Cast flash ──
+    if (castFlash > 0.005) {
+      ctx.fillStyle=`rgba(255,80,0,${castFlash*0.42})`; ctx.fillRect(0,0,cw,ch);
+      castFlash *= 0.86;
+    }
+
+    // ── 4. Ambient sparkles ──
+    sparkles.forEach(s=>{ s.update(); s.draw(); });
+
+    // ── 5. Determine what to emit ──
+    orbCenter = null;
+    let totalFireIntensity = 0;
+
+    if (spellActive && handLandmarks.length > 0) {
+      const base = spellLevel / 3;
+
+      if (handLandmarks.length >= 2) {
+        const c0 = palmCenter(handLandmarks[0]);
+        const c1 = palmCenter(handLandmarks[1]);
+        if (dist2D(c0,c1) < 160) {
+          orbCenter = { x:(c0.x+c1.x)/2, y:(c0.y+c1.y)/2 };
+          emitOrb(orbCenter.x, orbCenter.y, base + 0.2);
+          totalFireIntensity = base * 1.3;
+        } else {
+          handLandmarks.forEach(lm => {
+            const open = handOpenness(lm);
+            const iv   = (0.22 + open * 0.78) * base;
+            emitFire(lm, iv);
+            totalFireIntensity = Math.max(totalFireIntensity, iv);
+          });
+        }
+      } else {
+        const open = handOpenness(handLandmarks[0]);
+        const iv   = (0.22 + open * 0.78) * base;
+        emitFire(handLandmarks[0], iv);
+        totalFireIntensity = iv;
+      }
+
+      // Sound volume tracks actual fire intensity
+      setFireVol(totalFireIntensity);
+
+    } else {
+      // No hands in frame OR spell not active → silence
+      setFireVol(0);
+    }
+
+    // ── 6. Update particles (fire + embers) ──
+    const ocx = orbCenter ? orbCenter.x : undefined;
+    const ocy = orbCenter ? orbCenter.y : undefined;
+
+    // Separate into alive/dead in one pass
+    const nextP = [], nextE = [];
+    for (const p of particles) { if (p.update(ocx, ocy)) nextP.push(p); }
+    for (const e of embers)    { if (e.update())         nextE.push(e); }
+    particles = nextP; embers = nextE;
+
+    // Hard cap
+    if (particles.length > 1200) particles = particles.slice(-900);
+    if (embers.length    > 300)  embers    = embers.slice(-200);
+
+    // ── 7. BLOOM PASS ──────────────────────────────
+    // Draw all fire to offscreen canvas, composite with blur for glow
+    bloomCtx.clearRect(0, 0, cw, ch);
+    bloomCtx.globalCompositeOperation = 'source-over';
+    for (const p of particles) p.draw(bloomCtx);
+    for (const e of embers)    e.draw(bloomCtx);
+
+    // Composite bloom (blurred) onto main canvas in additive mode
+    ctx.save();
+    ctx.filter = 'blur(22px)';
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.65;
+    ctx.drawImage(bloomCanvas, 0, 0);
+    ctx.restore();
+
+    // ── 8. SHARP PASS — draw again without blur ──
+    for (const p of particles) p.draw(ctx);
+    for (const e of embers)    e.draw(ctx);
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+
+  requestAnimationFrame(render);
+  setupVoice();
+})();
+</script>
+</body>
+</html>
