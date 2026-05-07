@@ -35,13 +35,11 @@ import { setFireVol } from './audio.js';
 const MAX_HANDS = 2;
 
 // Visible fire RADIUS (in screen-UV-y units) per unit of palm span at level 1.
-// Palm span ~0.10 × 1.5 = 0.15 → fire radius is 15% of screen height.
-const RADIUS_PER_SPAN = 1.5;
+// Palm span ~0.10 × 1.6 = 0.16 → fire radius is 16% of screen height.
+// This is the single most important "doesn't get too big" knob.
+const RADIUS_PER_SPAN = 1.6;
 // Maximum fire radius regardless of how close the hand is to the camera.
-// Capped low enough that even at level 3 with a close hand, the flame
-// doesn't reach your face — leveling up makes the flame DENSER (more
-// intensity), not bigger.
-const MAX_RADIUS = 0.22;
+const MAX_RADIUS = 0.32;
 
 // Ember system caps.
 const EMBER_CAPACITY = 220;
@@ -286,26 +284,15 @@ export function createFireRenderer({ mountEl, videoEl }) {
         const open = handOpenness(lm);
         const span = palmSpanNorm(lm);
 
-        // Intensity carries most of the level-up weight: a level-3 flame
-        // is denser, more saturated, more "voluptuous" than level 1, but
-        // not significantly bigger. The shader interprets higher intensity
-        // as more body boost, more contrast, and more heat — without
-        // pushing the radius out toward your face.
-        //
-        //   level 1 → iv ≈ 0.55–0.75
-        //   level 2 → iv ≈ 0.85–1.10
-        //   level 3 → iv ≈ 1.15–1.50
-        const iv = (0.55 + open * 0.45) * (0.55 + baseLevel * 0.45);
+        // Intensity: fist = 0.30, open palm = 1.0, scaled by spell level.
+        // Higher floor than v1 — even a fist should look like real fire,
+        // just a small one. Wispy fire was caused by floor being too low.
+        const iv = (0.45 + open * 0.55) * baseLevel;
 
-        // Radius grows only marginally with spell level — palm span is the
-        // dominant driver. This is what stops level-ups from covering your
-        // face: the column gets fuller and brighter, not noticeably taller.
-        //
-        //   level 1 → ×1.05
-        //   level 2 → ×1.13
-        //   level 3 → ×1.20
+        // Radius scales with palm span × spell level, capped to MAX_RADIUS
+        // so a hand close to the camera doesn't fill the whole screen.
         const radius = Math.min(
-          span * RADIUS_PER_SPAN * (1.0 + baseLevel * 0.20),
+          span * RADIUS_PER_SPAN * (0.85 + baseLevel * 0.55),
           MAX_RADIUS
         );
 
