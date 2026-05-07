@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JustMagic ✦</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      overflow: hidden;
+      font-family: 'Palatino Linotype', 'Book Antiqua', 'Georgia', serif;
+      user-select: none;
+    }
+
+    /* The Three.js renderer mounts its own <canvas> here */
+    #stage {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+    }
+    #stage canvas { display: block; width: 100%; height: 100%; }
+
+    #hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #mic-status {
+      position: absolute;
+      top: 24px; left: 24px;
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: rgba(255, 200, 80, 0.45);
+      transition: color 0.4s, text-shadow 0.4s;
+    }
+    #mic-status.listening {
+      color: rgba(100, 255, 150, 0.9);
+      text-shadow: 0 0 14px rgba(100, 255, 150, 0.5);
+    }
+    #mic-status.error { color: rgba(255, 80, 80, 0.85); }
+
+    #dots {
+      position: absolute;
+      top: 28px; right: 28px;
+      display: flex; gap: 10px;
+    }
+    .dot {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 120, 0, 0.3);
+      background: transparent;
+      transition: all 0.35s;
+    }
+    .dot.lit {
+      background: #ff8800;
+      border-color: #ff8800;
+      box-shadow: 0 0 8px #ff6600, 0 0 20px #ff3300;
+    }
+
+    #spell-text {
+      position: absolute;
+      top: 20%; left: 0; right: 0;
+      text-align: center;
+      font-size: clamp(2rem, 5.5vw, 4.2rem);
+      font-weight: bold;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: #fff;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #spell-text.flash { animation: spellFlash 2.6s ease-out forwards; }
+    @keyframes spellFlash {
+      0%   { opacity:0; transform:scale(0.55) translateY(18px); filter:blur(10px); }
+      10%  { opacity:1; transform:scale(1.08) translateY(0);    filter:blur(0);
+             color:#fff; text-shadow:0 0 30px #fff,0 0 70px #ff9900,0 0 120px #ff4400; }
+      30%  { opacity:1; transform:scale(1.0);
+             color:#ffbb55; text-shadow:0 0 20px #ff8800,0 0 55px #ff3300; }
+      70%  { opacity:0.9; }
+      100% { opacity:0; transform:scale(0.94) translateY(-14px); }
+    }
+
+    #active-label {
+      position: absolute;
+      bottom: 64px; left: 0; right: 0;
+      text-align: center;
+      font-size: 11px; letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: rgba(255,150,50,0);
+      transition: color 0.5s;
+    }
+    #active-label.on { color: rgba(255,150,50,0.75); }
+
+    #hint {
+      position: absolute;
+      bottom: 26px; left: 0; right: 0;
+      text-align: center;
+      font-size: 11px; letter-spacing: 0.18em;
+      color: rgba(255,200,100,0.38); text-transform: uppercase;
+    }
+    #hint b { color:rgba(255,165,50,0.75); font-style:italic; font-weight:normal; }
+
+    .rune {
+      position: absolute; font-size: 18px;
+      color: rgba(255,180,60,0.12); pointer-events: none;
+    }
+    .rune.tl { top:18px; left:80px; }
+    .rune.tr { top:18px; right:80px; }
+    .rune.bl { bottom:18px; left:18px; }
+    .rune.br { bottom:18px; right:18px; }
+  </style>
+</head>
+<body>
+
+<div id="stage"></div>
+
+<div id="hud">
+  <div id="mic-status">◎ Initializing…</div>
+  <div id="dots">
+    <div class="dot" id="d0"></div>
+    <div class="dot" id="d1"></div>
+    <div class="dot" id="d2"></div>
+  </div>
+  <div id="spell-text"></div>
+  <div id="active-label">🔥 Fire · Active</div>
+  <div id="hint">Say <b>Incendia</b> to conjure · <b>Finite</b> to dismiss · <b>I</b> / <b>X</b> to test</div>
+  <span class="rune tl">⚡</span>
+  <span class="rune tr">✦</span>
+  <span class="rune bl">✦</span>
+  <span class="rune br">⚡</span>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
